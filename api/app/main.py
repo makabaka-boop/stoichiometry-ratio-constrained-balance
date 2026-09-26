@@ -8,8 +8,13 @@ from fastapi import FastAPI, Request
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
 
-from .balancer import balance, review
-from .validation import parse_compounds, parse_review_payload
+from .balancer import balance, balance_constrained, review, review_constrained
+from .validation import (
+    parse_compounds,
+    parse_constrained_balance_payload,
+    parse_constrained_review_payload,
+    parse_review_payload,
+)
 
 app = FastAPI(
     title="Stoichiometric Balancing Workbench",
@@ -56,6 +61,36 @@ async def post_review(request: Request) -> JSONResponse:
     assert parsed is not None
     compounds, coefficients = parsed
     return JSONResponse(review(compounds, coefficients))
+
+
+@app.post("/api/balance/constrained")
+async def post_balance_constrained(request: Request) -> JSONResponse:
+    payload = await _json_body(request)
+    if not isinstance(payload, dict):
+        return _validation_error([
+            {"code": "REQUEST_MALFORMED", "message": "Request body must be a JSON object."}
+        ])
+    parsed, issues = parse_constrained_balance_payload(payload)
+    if issues:
+        return _validation_error(issues)
+    assert parsed is not None
+    compounds, ratios = parsed
+    return JSONResponse(balance_constrained(compounds, ratios))
+
+
+@app.post("/api/review/constrained")
+async def post_review_constrained(request: Request) -> JSONResponse:
+    payload = await _json_body(request)
+    if not isinstance(payload, dict):
+        return _validation_error([
+            {"code": "REQUEST_MALFORMED", "message": "Request body must be a JSON object."}
+        ])
+    parsed, issues = parse_constrained_review_payload(payload)
+    if issues:
+        return _validation_error(issues)
+    assert parsed is not None
+    compounds, coefficients, ratios = parsed
+    return JSONResponse(review_constrained(compounds, coefficients, ratios))
 
 
 async def _json_body(request: Request) -> Any:

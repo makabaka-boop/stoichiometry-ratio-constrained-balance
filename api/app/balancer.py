@@ -31,6 +31,20 @@ class Compound:
     composition: dict[str, int]
 
 
+@dataclass(frozen=True)
+class Ratio:
+    """Approved feed ratio ``coefficient[a] : coefficient[b] == a_coefficient : b_coefficient``.
+
+    As an exact linear constraint on the coefficient vector ``c`` this is
+    ``b_coefficient * c[a] - a_coefficient * c[b] == 0``.
+    """
+
+    a: str
+    b: str
+    a_coefficient: int
+    b_coefficient: int
+
+
 def _lcm(a: int, b: int) -> int:
     return a // gcd(a, b) * b
 
@@ -152,10 +166,33 @@ def _format_equation(
     return f"{terms(REACTANT)} -> {terms(PRODUCT)}"
 
 
-def balance(compounds: list[Compound]) -> dict[str, object]:
-    """Balance one validated compound set and return the full verdict payload."""
+def ratio_rows(compounds: list[Compound], ratios: list[Ratio]) -> list[list[Fraction]]:
+    """One exact integer row per approved ratio: ``q * c[a] - p * c[b] == 0``."""
+    column_of = {compound.id: index for index, compound in enumerate(compounds)}
+    rows: list[list[Fraction]] = []
+    for ratio in ratios:
+        row = [Fraction(0)] * len(compounds)
+        row[column_of[ratio.a]] = Fraction(ratio.b_coefficient)
+        row[column_of[ratio.b]] = Fraction(-ratio.a_coefficient)
+        rows.append(row)
+    return rows
+
+
+def _solve(
+    compounds: list[Compound],
+    constraint_rows: list[list[Fraction]],
+    *,
+    constrained: bool,
+) -> dict[str, object]:
+    """Shared verdict logic for plain and ratio-constrained balancing.
+
+    ``constraint_rows`` are appended to the conservation matrix before the
+    exact RREF null-space computation, so approved ratios eliminate together
+    with element conservation. No free variable is ever hand-picked: the
+    nullity reported is the one the combined matrix objectively has.
+    """
     elements = ordered_elements(compounds)
-    matrix = build_matrix(compounds, elements)
+    matrix = build_matrix(compounds, elements) + constraint_rows
     basis = null_space(matrix, len(compounds))
     nullity = len(basis)
 
@@ -168,21 +205,37 @@ def balance(compounds: list[Compound]) -> dict[str, object]:
 
     if nullity == 0:
         result["status"] = NO_BALANCE
-        result["reason"] = "Null space is empty: conservation constraints are inconsistent."
+        result["reason"] = (
+            "Null space is empty under the ratio constraints: conservation "
+            "and ratio constraints contradict each other."
+            if constrained
+            else "Null space is empty: conservation constraints are inconsistent."
+        )
         return result
 
     if nullity > 1:
         result["status"] = UNDERDETERMINED
         result["reason"] = (
-            f"Null space has dimension {nullity}: multiple stoichiometric "
-            "families exist, so no unique recipe can be certified."
+            f"Null space still has dimension {nullity} after the ratio "
+            "constraints: multiple stoichiometric families remain, so no "
+            "unique recipe can be certified."
+            if constrained
+            else (
+                f"Null space has dimension {nullity}: multiple stoichiometric "
+                "families exist, so no unique recipe can be certified."
+            )
         )
         return result
 
     vector = basis[0]
     if any(value == 0 for value in vector):
         result["status"] = NO_POSITIVE_BALANCE
-        result["reason"] = "The unique null vector assigns a zero coefficient to at least one compound."
+        result["reason"] = (
+            "The unique constrained null vector assigns a zero coefficient "
+            "to at least one compound."
+            if constrained
+            else "The unique null vector assigns a zero coefficient to at least one compound."
+        )
         return result
 
     if all(value > 0 for value in vector):
@@ -191,7 +244,11 @@ def balance(compounds: list[Compound]) -> dict[str, object]:
         oriented = [-value for value in vector]
     else:
         result["status"] = NO_POSITIVE_BALANCE
-        result["reason"] = "The unique null vector mixes positive and negative entries."
+        result["reason"] = (
+            "The unique constrained null vector mixes positive and negative entries."
+            if constrained
+            else "The unique null vector mixes positive and negative entries."
+        )
         return result
 
     integers = _to_primitive_ints(oriented)
@@ -202,6 +259,37 @@ def balance(compounds: list[Compound]) -> dict[str, object]:
     result["coefficients"] = coefficients
     result["element_totals"] = _element_totals(compounds, elements, coefficients)
     result["equation"] = _format_equation(compounds, coefficients)
+    return result
+
+
+def _ratio_payload(ratio: Ratio) -> dict[str, object]:
+    return {
+        "a": ratio.a,
+        "b": ratio.b,
+        "a_coefficient": ratio.a_coefficient,
+        "b_coefficient": ratio.b_coefficient,
+    }
+
+
+def balance(compounds: list[Compound]) -> dict[str, object]:
+    """Balance one validated compound set and return the full verdict payload."""
+    return _solve(compounds, [], constrained=False)
+
+
+def balance_constrained(
+    compounds: list[Compound], ratios: list[Ratio]
+) -> dict[str, object]:
+    """Balance under additional approved coefficient-ratio constraints.
+
+    The ratios are appended to the exact rational conservation matrix as new
+    rows and eliminated together with it. A certificate is issued only when
+    the constrained null space has dimension exactly one and orients to an
+    all-positive primitive integer vector; contradictory ratios, remaining
+    multiple solutions, and zero/mixed unique vectors each keep their own
+    explicit status.
+    """
+    result = _solve(compounds, ratio_rows(compounds, ratios), constrained=True)
+    result["ratios"] = [_ratio_payload(ratio) for ratio in ratios]
     return result
 
 
@@ -251,3 +339,39 @@ def review(
         "unbalanced_elements": unbalanced,
         "elements": element_totals,
     }
+
+
+def review_constrained(
+    compounds: list[Compound],
+    coefficients: dict[str, int],
+    ratios: list[Ratio],
+) -> dict[str, object]:
+    """Re-check human-entered coefficients, including the approved ratios.
+
+    Everything :func:`review` verifies is verified here as well; on top of
+    that each ratio ``c[a] : c[b] == a_coefficient : b_coefficient`` is
+    checked with exact integer arithmetic. Missing coefficients count as 0,
+    so a ratio referencing an absent coefficient is violated unless both
+    sides are absent (which is already reported as MISSING_COEFFICIENTS).
+    """
+    verdict = review(compounds, coefficients)
+
+    ratio_reports: list[dict[str, object]] = []
+    violated: list[int] = []
+    for index, ratio in enumerate(ratios):
+        left = coefficients.get(ratio.a, 0) * ratio.b_coefficient
+        right = coefficients.get(ratio.b, 0) * ratio.a_coefficient
+        satisfied = left == right
+        if not satisfied:
+            violated.append(index)
+        ratio_reports.append({**_ratio_payload(ratio), "satisfied": satisfied})
+
+    reasons = list(verdict["reasons"])
+    if violated:
+        reasons.append("RATIO_VIOLATED")
+
+    verdict["valid"] = not reasons
+    verdict["reasons"] = reasons
+    verdict["ratios"] = ratio_reports
+    verdict["violated_ratios"] = violated
+    return verdict

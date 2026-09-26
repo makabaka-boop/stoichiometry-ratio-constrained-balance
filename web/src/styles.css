@@ -421,6 +421,87 @@ tr.bad-row td {
   padding-left: 18px;
 }
 
+/* ---------- ratio constraints ---------- */
+
+.ratio-panel {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+}
+
+.ratio-list {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+.ratio-row {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  flex-wrap: wrap;
+}
+
+.ratio-index {
+  color: var(--muted);
+  font-size: 12px;
+  min-width: 44px;
+}
+
+.ratio-coefficient {
+  width: 64px;
+}
+
+.ratio-colon {
+  font-weight: 700;
+  color: var(--muted);
+}
+
+.ratio-actions {
+  display: flex;
+  gap: 8px;
+  flex-wrap: wrap;
+}
+
+.ratio-basis {
+  margin: 4px 0 8px;
+  font-size: 13.5px;
+  background: #eef2ff;
+  border: 1px solid #c7d2fe;
+  border-radius: 6px;
+  padding: 6px 10px;
+}
+
+.ratio-constraint-row td {
+  background: #f5f3ff;
+}
+
+.mini-side.ratio {
+  color: var(--product);
+}
+
+.ratio-check-list {
+  margin: 6px 0;
+  padding-left: 18px;
+  list-style: none;
+}
+
+.ratio-check-list li {
+  padding: 3px 8px;
+  border-radius: 4px;
+  margin-bottom: 3px;
+}
+
+.ratio-check-list li.ok-row {
+  background: #f0faf3;
+  color: var(--ok);
+}
+
+.ratio-check-list li.bad-row {
+  background: #fef3f2;
+  color: var(--bad);
+}
+
 @media (max-width: 900px) {
   .layout {
     grid-template-columns: 1fr;

@@ -17,6 +17,31 @@ export interface CompoundDraft {
   entries: EntryRow[];
 }
 
+/**
+ * One approved feed-ratio row as edited in the UI. ``aKey``/``bKey`` are
+ * compound draft keys (stable across id renames); the coefficients stay raw
+ * strings so invalid text never overwrites the last valid form.
+ */
+export interface RatioDraft {
+  key: string;
+  aKey: string;
+  bKey: string;
+  aCoefficient: string;
+  bCoefficient: string;
+}
+
+/** Wire shape of one approved ratio: coefficient[a] : coefficient[b]. */
+export interface RatioSpec {
+  a: string;
+  b: string;
+  a_coefficient: number;
+  b_coefficient: number;
+}
+
+export interface RatioReport extends RatioSpec {
+  satisfied: boolean;
+}
+
 export interface ElementTotal {
   element: string;
   reactant: number;
@@ -39,6 +64,8 @@ export interface BalanceResult {
   coefficients?: Record<string, number>;
   element_totals?: ElementTotal[];
   equation?: string;
+  /** Echo of the approved ratios the certificate was issued under. */
+  ratios?: RatioSpec[];
 }
 
 export interface ReviewResult {
@@ -51,6 +78,9 @@ export interface ReviewResult {
   non_positive_ids: string[];
   unbalanced_elements: string[];
   elements: ElementTotal[];
+  /** Per-ratio verdicts, present when the review included ratio checks. */
+  ratios?: RatioReport[];
+  violated_ratios?: number[];
 }
 
 export interface ApiIssue {
@@ -109,4 +139,19 @@ export function requestReview(
   coefficients: Record<string, number>,
 ): Promise<ReviewResult> {
   return postJson("/api/review", { compounds, coefficients });
+}
+
+export function requestConstrainedBalance(
+  compounds: Array<{ id: string; side: Side; composition: Record<string, number> }>,
+  ratios: RatioSpec[],
+): Promise<BalanceResult> {
+  return postJson("/api/balance/constrained", { compounds, ratios });
+}
+
+export function requestConstrainedReview(
+  compounds: Array<{ id: string; side: Side; composition: Record<string, number> }>,
+  coefficients: Record<string, number>,
+  ratios: RatioSpec[],
+): Promise<ReviewResult> {
+  return postJson("/api/review/constrained", { compounds, coefficients, ratios });
 }

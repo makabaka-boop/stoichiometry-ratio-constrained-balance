@@ -1,4 +1,4 @@
-import { CompoundDraft } from "./api";
+import { CompoundDraft, RatioDraft, RatioSpec } from "./api";
 import { ELEMENT_SYMBOLS } from "./elements";
 
 export interface LocalIssue {
@@ -8,6 +8,8 @@ export interface LocalIssue {
 export const MIN_COMPOUNDS = 2;
 export const MAX_COMPOUNDS = 12;
 export const MAX_ELEMENTS = 20;
+export const MIN_RATIOS = 1;
+export const MAX_RATIOS = 2;
 
 /**
  * Mirror of the server-side semantic checks. The server remains the
@@ -87,4 +89,62 @@ export function buildPayload(drafts: CompoundDraft[]) {
     }
     return { id: draft.id.trim(), side: draft.side, composition };
   });
+}
+
+export interface RatioResolution {
+  specs: RatioSpec[];
+  issues: string[];
+}
+
+/**
+ * Mirror of the server-side ratio checks. Resolves draft keys to compound
+ * IDs and parses the raw coefficient strings; anything invalid is reported
+ * and produces no spec, so an invalid edit can never overwrite the last
+ * valid ratios submitted to the server.
+ */
+export function resolveRatioSpecs(
+  ratios: RatioDraft[],
+  drafts: CompoundDraft[],
+): RatioResolution {
+  const issues: string[] = [];
+  const specs: RatioSpec[] = [];
+
+  if (ratios.length < MIN_RATIOS || ratios.length > MAX_RATIOS) {
+    issues.push(`比例约束需填写 ${MIN_RATIOS}–${MAX_RATIOS} 条（当前 ${ratios.length} 条）。`);
+  }
+
+  ratios.forEach((ratio, index) => {
+    const where = `比例 ${index + 1}`;
+    const aDraft = drafts.find((draft) => draft.key === ratio.aKey);
+    const bDraft = drafts.find((draft) => draft.key === ratio.bKey);
+    const a = aDraft?.id.trim() ?? "";
+    const b = bDraft?.id.trim() ?? "";
+
+    if (!aDraft || a === "") {
+      issues.push(`${where}：化合物 A 未选择（引用的化合物可能已删除或尚未命名）。`);
+    }
+    if (!bDraft || b === "") {
+      issues.push(`${where}：化合物 B 未选择（引用的化合物可能已删除或尚未命名）。`);
+    }
+    if (aDraft && bDraft && ratio.aKey === ratio.bKey) {
+      issues.push(`${where}：化合物 A 与 B 必须是两种不同的化合物。`);
+    }
+
+    const pText = ratio.aCoefficient.trim();
+    const qText = ratio.bCoefficient.trim();
+    const pValid = /^\d+$/.test(pText) && Number(pText) > 0;
+    const qValid = /^\d+$/.test(qText) && Number(qText) > 0;
+    if (!pValid) {
+      issues.push(`${where}：化合物 A 的系数必须为正整数（当前 “${ratio.aCoefficient}”）。`);
+    }
+    if (!qValid) {
+      issues.push(`${where}：化合物 B 的系数必须为正整数（当前 “${ratio.bCoefficient}”）。`);
+    }
+
+    if (a !== "" && b !== "" && ratio.aKey !== ratio.bKey && pValid && qValid) {
+      specs.push({ a, b, a_coefficient: Number(pText), b_coefficient: Number(qText) });
+    }
+  });
+
+  return { specs, issues };
 }

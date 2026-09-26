@@ -34,3 +34,28 @@ class ReviewRequest(BaseModel):
 
     compounds: list[CompoundIn] = Field(min_length=2, max_length=12)
     coefficients: dict[str, StrictInt]
+
+
+class RatioIn(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    a: str
+    b: str
+    # StrictInt refuses booleans (which would otherwise coerce to 0/1).
+    a_coefficient: StrictInt
+    b_coefficient: StrictInt
+
+
+class ConstrainedBalanceRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    compounds: list[CompoundIn] = Field(min_length=2, max_length=12)
+    ratios: list[RatioIn] = Field(min_length=1, max_length=2)
+
+
+class ConstrainedReviewRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    compounds: list[CompoundIn] = Field(min_length=2, max_length=12)
+    coefficients: dict[str, StrictInt]
+    ratios: list[RatioIn] = Field(min_length=1, max_length=2)

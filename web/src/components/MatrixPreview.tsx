@@ -1,11 +1,13 @@
-import { CompoundDraft } from "../lib/api";
+import { CompoundDraft, RatioSpec } from "../lib/api";
 
 interface Props {
   drafts: CompoundDraft[];
+  /** Validated ratio constraints appended to the elimination matrix. */
+  ratios: RatioSpec[];
 }
 
 /** Read-only signed conservation matrix: reactants positive, products negative. */
-export function MatrixPreview({ drafts }: Props) {
+export function MatrixPreview({ drafts, ratios }: Props) {
   const symbols: string[] = [];
   for (const draft of drafts) {
     for (const entry of draft.entries) {
@@ -27,6 +29,8 @@ export function MatrixPreview({ drafts }: Props) {
 
   if (drafts.length === 0) return null;
 
+  const ids = drafts.map((draft) => draft.id.trim());
+
   return (
     <section className="panel matrix-preview" data-testid="matrix-preview">
       <h2>守恒矩阵预览</h2>
@@ -35,7 +39,7 @@ export function MatrixPreview({ drafts }: Props) {
         <table data-testid="matrix-table">
           <thead>
             <tr>
-              <th>元素 \\ 化合物</th>
+              <th>元素 \ 化合物</th>
               {drafts.map((draft, index) => (
                 <th key={draft.key}>
                   #{index + 1} {draft.id.trim() || "？"}
@@ -61,9 +65,33 @@ export function MatrixPreview({ drafts }: Props) {
                 })}
               </tr>
             ))}
+            {ratios.map((ratio, index) => (
+              <tr key={`ratio-${index}`} className="ratio-constraint-row" data-testid="matrix-ratio-row">
+                <td>
+                  比例{index + 1}
+                  <div className="mini-side ratio">
+                    {ratio.a} : {ratio.b}
+                  </div>
+                </td>
+                {ids.map((id, c) => {
+                  const value =
+                    id === ratio.a ? ratio.b_coefficient : id === ratio.b ? -ratio.a_coefficient : 0;
+                  return (
+                    <td key={c} className={value === 0 ? "zero" : value > 0 ? "pos" : "neg"}>
+                      {value}
+                    </td>
+                  );
+                })}
+              </tr>
+            ))}
           </tbody>
         </table>
       </div>
+      {ratios.length > 0 && (
+        <p className="hint" data-testid="matrix-ratio-hint">
+          比例约束行 q·c<sub>A</sub> − p·c<sub>B</sub> = 0 与守恒行共同消元。
+        </p>
+      )}
     </section>
   );
 }

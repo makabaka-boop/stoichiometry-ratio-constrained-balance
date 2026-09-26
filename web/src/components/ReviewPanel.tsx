@@ -18,6 +18,7 @@ const REASON_TEXT: Record<string, string> = {
   MISSING_COEFFICIENTS: "有化合物缺少系数",
   UNKNOWN_COEFFICIENT_IDS: "出现了未知化合物 ID 的系数",
   NON_POSITIVE_COEFFICIENT: "系数必须为正整数",
+  RATIO_VIOLATED: "系数不满足所填的已批准投料比例",
 };
 
 export function ReviewPanel({
@@ -34,7 +35,8 @@ export function ReviewPanel({
     <section className={`panel review${result?.valid ? " tone-ok" : result ? "tone-bad" : ""}`}>
       <h2>人工系数复核区</h2>
       <p className="hint">
-        填入你怀疑的整数系数，服务端独立复核：逐元素给出两侧总数，指出不守恒或非最简。
+        填入你怀疑的整数系数，服务端独立复核：逐元素给出两侧总数，指出不守恒或非最简；
+        若已填写比例约束，复核会同时检查系数是否满足所填比例。
         任何输入修改都会立即撤销旧证书，并把上次复核标记为已过期。
       </p>
 
@@ -95,6 +97,21 @@ export function ReviewPanel({
           )}
           {!result.valid && result.gcd !== null && result.gcd > 1 && (
             <p>整体最大公约数 = {result.gcd}，可整体约去。</p>
+          )}
+          {result.ratios && result.ratios.length > 0 && (
+            <ul className="ratio-check-list" data-testid="review-ratio-list">
+              {result.ratios.map((ratio, index) => (
+                <li
+                  key={index}
+                  data-testid="review-ratio-row"
+                  data-satisfied={ratio.satisfied ? "true" : "false"}
+                  className={ratio.satisfied ? "ok-row" : "bad-row"}
+                >
+                  比例 {ratio.a} : {ratio.b} = {ratio.a_coefficient} : {ratio.b_coefficient}
+                  　{ratio.satisfied ? "满足" : "不满足"}
+                </li>
+              ))}
+            </ul>
           )}
           {result.elements.length > 0 && (
             <table className="totals-table" data-testid="review-table">

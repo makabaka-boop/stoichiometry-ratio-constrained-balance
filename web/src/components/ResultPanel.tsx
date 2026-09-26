@@ -34,6 +34,15 @@ export function ResultPanel({ result, stale }: Props) {
         状态码：{result.status}　·　零空间维数：{result.nullity}
       </p>
 
+      {result.ratios && result.ratios.length > 0 && (
+        <p className="ratio-basis" data-testid="ratio-basis">
+          比例依据：
+          {result.ratios
+            .map((ratio) => `${ratio.a} : ${ratio.b} = ${ratio.a_coefficient} : ${ratio.b_coefficient}`)
+            .join("；")}
+        </p>
+      )}
+
       {result.status === "BALANCED" && result.coefficients && result.element_totals ? (
         <>
           <p className="equation" data-testid="result-equation">

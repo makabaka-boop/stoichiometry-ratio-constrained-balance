@@ -3,13 +3,17 @@ import {
   ApiError,
   BalanceResult,
   CompoundDraft,
+  RatioDraft,
   ReviewResult,
   requestBalance,
+  requestConstrainedBalance,
+  requestConstrainedReview,
   requestReview,
 } from "./lib/api";
-import { buildPayload, validateDrafts } from "./lib/validation";
+import { buildPayload, resolveRatioSpecs, validateDrafts } from "./lib/validation";
 import { CompoundEditor } from "./components/CompoundEditor";
 import { MatrixPreview } from "./components/MatrixPreview";
+import { RatioPanel } from "./components/RatioPanel";
 import { ResultPanel } from "./components/ResultPanel";
 import { ReviewPanel } from "./components/ReviewPanel";
 import "./styles.css";
@@ -17,15 +21,19 @@ import "./styles.css";
 export default function App() {
   const [drafts, setDrafts] = useState<CompoundDraft[]>([]);
   /**
-   * Bumped on EVERY edit of the input. A certificate records the revision
-   * it was minted at; once currentRevision > certifiedRevision the old
-   * certificate is visibly revoked, even before the next solve.
+   * Bumped on EVERY edit of the input — compound matrix or ratio rows.
+   * A certificate records the revision it was minted at; once
+   * currentRevision > certifiedRevision the old certificate is visibly
+   * revoked, even before the next solve.
    */
   const [revision, setRevision] = useState(0);
   const [result, setResult] = useState<BalanceResult | null>(null);
   const [certifiedRevision, setCertifiedRevision] = useState<number | null>(null);
   const [balanceIssues, setBalanceIssues] = useState<string[]>([]);
   const [balanceBusy, setBalanceBusy] = useState(false);
+
+  const [ratioDrafts, setRatioDrafts] = useState<RatioDraft[]>([]);
+  const [ratioIssues, setRatioIssues] = useState<string[]>([]);
 
   const [reviewValues, setReviewValues] = useState<Record<string, string>>({});
   const [reviewResult, setReviewResult] = useState<ReviewResult | null>(null);
@@ -39,10 +47,17 @@ export default function App() {
   const touch = () => {
     setRevision((value) => value + 1);
     setBalanceIssues([]);
+    setRatioIssues([]);
   };
 
   const handleDraftsChange = (next: CompoundDraft[]) => {
     setDrafts(next);
+    touch();
+  };
+
+  // Editing a ratio revokes the old certificate exactly like a compound edit.
+  const handleRatiosChange = (next: RatioDraft[]) => {
+    setRatioDrafts(next);
     touch();
   };
 
@@ -54,6 +69,27 @@ export default function App() {
   };
 
   const localIssues = useMemo(() => validateDrafts(drafts).map((i) => i.message), [drafts]);
+  const ratioResolution = useMemo(
+    () => resolveRatioSpecs(ratioDrafts, drafts),
+    [ratioDrafts, drafts],
+  );
+  const validRatioSpecs = ratioResolution.issues.length === 0 ? ratioResolution.specs : [];
+
+  const applyBalanceResult = (answer: BalanceResult) => {
+    setResult(answer);
+    if (answer.status === "BALANCED" && answer.coefficients) {
+      // A new certificate is minted; seed the manual review fields
+      // with the certified primitive coefficients.
+      setCertifiedRevision(revision);
+      const seeded: Record<string, string> = {};
+      drafts.forEach((draft) => {
+        seeded[draft.key] = String(answer.coefficients![draft.id.trim()] ?? "");
+      });
+      setReviewValues(seeded);
+    } else {
+      setCertifiedRevision(null);
+    }
+  };
 
   const handleBalance = async () => {
     if (localIssues.length > 0) {
@@ -67,19 +103,7 @@ export default function App() {
     try {
       const payload = buildPayload(drafts);
       const answer = await requestBalance(payload);
-      setResult(answer);
-      if (answer.status === "BALANCED" && answer.coefficients) {
-        // A new certificate is minted; seed the manual review fields
-        // with the certified primitive coefficients.
-        setCertifiedRevision(revision);
-        const seeded: Record<string, string> = {};
-        drafts.forEach((draft) => {
-          seeded[draft.key] = String(answer.coefficients![draft.id.trim()] ?? "");
-        });
-        setReviewValues(seeded);
-      } else {
-        setCertifiedRevision(null);
-      }
+      applyBalanceResult(answer);
     } catch (error) {
       const issues =
         error instanceof ApiError
@@ -93,9 +117,47 @@ export default function App() {
     }
   };
 
+  const handleConstrainedBalance = async () => {
+    if (localIssues.length > 0) {
+      setBalanceIssues(localIssues);
+      return;
+    }
+    if (ratioResolution.issues.length > 0) {
+      // Invalid ratio input never reaches the server and never overwrites
+      // the last valid form or certificate; it only raises issues here.
+      setRatioIssues(ratioResolution.issues);
+      return;
+    }
+    setBalanceBusy(true);
+    setBalanceIssues([]);
+    setRatioIssues([]);
+    try {
+      const answer = await requestConstrainedBalance(
+        buildPayload(drafts),
+        ratioResolution.specs,
+      );
+      applyBalanceResult(answer);
+    } catch (error) {
+      const issues =
+        error instanceof ApiError
+          ? error.issues.map((issue) => `${issue.code}：${issue.message}`)
+          : ["未知错误"];
+      setBalanceIssues(issues);
+    } finally {
+      setBalanceBusy(false);
+    }
+  };
+
   const handleReview = async () => {
     if (localIssues.length > 0) {
       setReviewError(localIssues.join(" "));
+      return;
+    }
+    // Whenever ratio rows are filled in, the manual review must check them
+    // too — invalid ratio text blocks the review instead of being dropped.
+    const useRatios = ratioDrafts.length > 0;
+    if (useRatios && ratioResolution.issues.length > 0) {
+      setReviewError(`比例约束无效，无法复核：${ratioResolution.issues.join(" ")}`);
       return;
     }
     const numeric: Record<string, number> = {};
@@ -117,7 +179,9 @@ export default function App() {
     setReviewBusy(true);
     setReviewError(null);
     try {
-      const answer = await requestReview(buildPayload(drafts), numeric);
+      const answer = useRatios
+        ? await requestConstrainedReview(buildPayload(drafts), numeric, ratioResolution.specs)
+        : await requestReview(buildPayload(drafts), numeric);
       setReviewResult(answer);
       setReviewSnapshot({ matrixRevision: revision, values: { ...reviewValues } });
     } catch (error) {
@@ -129,6 +193,16 @@ export default function App() {
     } finally {
       setReviewBusy(false);
     }
+  };
+
+  const resetDerivedState = () => {
+    setResult(null);
+    setCertifiedRevision(null);
+    setReviewResult(null);
+    setReviewSnapshot(null);
+    setReviewValues({});
+    setRatioDrafts([]);
+    setRatioIssues([]);
   };
 
   const loadSample = () => {
@@ -156,11 +230,44 @@ export default function App() {
       },
     ]);
     touch();
-    setResult(null);
-    setCertifiedRevision(null);
-    setReviewResult(null);
-    setReviewSnapshot(null);
-    setReviewValues({});
+    resetDerivedState();
+  };
+
+  const loadUnderdeterminedSample = () => {
+    setDrafts([
+      {
+        key: "sample-u1",
+        id: "H2",
+        side: "REACTANT",
+        entries: [{ key: "sample-ue1", symbol: "H", count: "2" }],
+      },
+      {
+        key: "sample-u2",
+        id: "O2",
+        side: "REACTANT",
+        entries: [{ key: "sample-ue2", symbol: "O", count: "2" }],
+      },
+      {
+        key: "sample-u3",
+        id: "H2O",
+        side: "PRODUCT",
+        entries: [
+          { key: "sample-ue3", symbol: "H", count: "2" },
+          { key: "sample-ue4", symbol: "O", count: "1" },
+        ],
+      },
+      {
+        key: "sample-u4",
+        id: "H2O2",
+        side: "PRODUCT",
+        entries: [
+          { key: "sample-ue5", symbol: "H", count: "2" },
+          { key: "sample-ue6", symbol: "O", count: "2" },
+        ],
+      },
+    ]);
+    touch();
+    resetDerivedState();
   };
 
   const certificateStale =
@@ -182,12 +289,20 @@ export default function App() {
         <button type="button" className="ghost small" data-testid="load-sample" onClick={loadSample}>
           载入示例：H₂ + O₂ → H₂O
         </button>
+        <button
+          type="button"
+          className="ghost small"
+          data-testid="load-underdetermined-sample"
+          onClick={loadUnderdeterminedSample}
+        >
+          载入多解示例：H₂ + O₂ → H₂O + H₂O₂
+        </button>
       </header>
 
       <div className="layout">
         <div className="column">
           <CompoundEditor drafts={drafts} onChange={handleDraftsChange} />
-          <MatrixPreview drafts={drafts} />
+          <MatrixPreview drafts={drafts} ratios={validRatioSpecs} />
         </div>
 
         <div className="column">
@@ -222,6 +337,15 @@ export default function App() {
               </div>
             )}
           </section>
+
+          <RatioPanel
+            drafts={drafts}
+            ratios={ratioDrafts}
+            onChange={handleRatiosChange}
+            onSolve={handleConstrainedBalance}
+            busy={balanceBusy}
+            issues={ratioIssues}
+          />
 
           {result && <ResultPanel result={result} stale={certificateStale} />}
 

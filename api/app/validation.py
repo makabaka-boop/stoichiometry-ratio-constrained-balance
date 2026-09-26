@@ -13,14 +13,23 @@ from typing import Any
 
 from pydantic import ValidationError
 
-from .balancer import Compound
+from .balancer import Compound, Ratio
 from .elements import ELEMENT_SYMBOLS
-from .schemas import BalanceRequest, CompoundIn, ReviewRequest
+from .schemas import (
+    BalanceRequest,
+    CompoundIn,
+    ConstrainedBalanceRequest,
+    ConstrainedReviewRequest,
+    RatioIn,
+    ReviewRequest,
+)
 
 MAX_COMPOUNDS = 12
 MIN_COMPOUNDS = 2
 MAX_ELEMENTS = 20
 MAX_ID_LENGTH = 64
+MIN_RATIOS = 1
+MAX_RATIOS = 2
 
 
 def _issue(
@@ -73,16 +82,28 @@ def _translate_pydantic(exc: ValidationError) -> list[dict[str, Any]]:
                 )
             )
         elif error_type in ("too_short", "too_long"):
-            issues.append(
-                _issue(
-                    "INVALID_COMPOUND_COUNT",
-                    f"compounds must contain between {MIN_COMPOUNDS} and "
-                    f"{MAX_COMPOUNDS} unique entries.",
-                    loc=loc,
-                    value=error.get("input") if not isinstance(error.get("input"), list)
-                    else len(error["input"]),
+            if loc.startswith("ratios"):
+                issues.append(
+                    _issue(
+                        "INVALID_RATIO_COUNT",
+                        f"ratios must contain between {MIN_RATIOS} and "
+                        f"{MAX_RATIOS} entries.",
+                        loc=loc,
+                        value=error.get("input") if not isinstance(error.get("input"), list)
+                        else len(error["input"]),
+                    )
                 )
-            )
+            else:
+                issues.append(
+                    _issue(
+                        "INVALID_COMPOUND_COUNT",
+                        f"compounds must contain between {MIN_COMPOUNDS} and "
+                        f"{MAX_COMPOUNDS} unique entries.",
+                        loc=loc,
+                        value=error.get("input") if not isinstance(error.get("input"), list)
+                        else len(error["input"]),
+                    )
+                )
         elif error_type in ("int_type", "int_parsing", "int_from_float"):
             issues.append(
                 _issue("INVALID_INTEGER", "Value must be an integer.", loc=loc)
@@ -232,3 +253,131 @@ def parse_review_payload(
         cid: int(value) for cid, value in request.coefficients.items()
     }
     return (compounds, coefficients), []
+
+
+def _semantic_ratio_issues(
+    raw_ratios: list[RatioIn], compound_ids: list[str]
+) -> list[dict[str, Any]]:
+    """Semantic checks for approved ratios; structural problems (wrong types,
+    non-integer coefficients, unknown fields, wrong ratio count) have already
+    been rejected by Pydantic. Mutually contradictory ratios are *not* an
+    input error: they are handed to the exact solver, which reports the
+    contradiction as NO_BALANCE."""
+    issues: list[dict[str, Any]] = []
+    known_ids = set(compound_ids)
+
+    for index, raw in enumerate(raw_ratios):
+        loc = f"ratios[{index}]"
+
+        for field, reference in (("a", raw.a), ("b", raw.b)):
+            if reference == "":
+                issues.append(
+                    _issue(
+                        "EMPTY_RATIO_COMPOUND",
+                        "Ratio compound reference must be a non-empty compound id.",
+                        loc=f"{loc}.{field}",
+                    )
+                )
+            elif reference not in known_ids:
+                issues.append(
+                    _issue(
+                        "UNKNOWN_RATIO_COMPOUND",
+                        f"Ratio references unknown compound id '{reference}'.",
+                        loc=f"{loc}.{field}",
+                        compound_id=reference,
+                    )
+                )
+
+        if raw.a and raw.b and raw.a == raw.b:
+            issues.append(
+                _issue(
+                    "RATIO_SAME_COMPOUND",
+                    "A ratio must constrain two different compounds.",
+                    loc=loc,
+                    compound_id=raw.a,
+                )
+            )
+
+        for field, coefficient in (
+            ("a_coefficient", raw.a_coefficient),
+            ("b_coefficient", raw.b_coefficient),
+        ):
+            if coefficient <= 0:
+                issues.append(
+                    _issue(
+                        "NON_POSITIVE_RATIO",
+                        "Ratio coefficients must be positive integers.",
+                        loc=f"{loc}.{field}",
+                        value=coefficient,
+                    )
+                )
+    return issues
+
+
+def _parse_ratios(
+    raw_ratios: list[RatioIn], compounds: list[Compound]
+) -> tuple[list[Ratio] | None, list[dict[str, Any]]]:
+    issues = _semantic_ratio_issues(raw_ratios, [c.id for c in compounds])
+    if issues:
+        return None, issues
+    ratios = [
+        Ratio(
+            a=raw.a,
+            b=raw.b,
+            a_coefficient=int(raw.a_coefficient),
+            b_coefficient=int(raw.b_coefficient),
+        )
+        for raw in raw_ratios
+    ]
+    return ratios, []
+
+
+def parse_constrained_balance_payload(
+    payload: Any,
+) -> tuple[tuple[list[Compound], list[Ratio]] | None, list[dict[str, Any]]]:
+    try:
+        request = ConstrainedBalanceRequest.model_validate(payload)
+    except ValidationError as exc:
+        return None, _translate_pydantic(exc)
+
+    compounds, issues = parse_compounds(
+        {"compounds": [raw.model_dump() for raw in request.compounds]}
+    )
+    if issues:
+        return None, issues
+    assert compounds is not None
+
+    ratios, ratio_issues = _parse_ratios(request.ratios, compounds)
+    if ratio_issues:
+        return None, ratio_issues
+    assert ratios is not None
+    return (compounds, ratios), []
+
+
+def parse_constrained_review_payload(
+    payload: Any,
+) -> tuple[
+    tuple[list[Compound], dict[str, int], list[Ratio]] | None,
+    list[dict[str, Any]],
+]:
+    try:
+        request = ConstrainedReviewRequest.model_validate(payload)
+    except ValidationError as exc:
+        return None, _translate_pydantic(exc)
+
+    compounds, issues = parse_compounds(
+        {"compounds": [raw.model_dump() for raw in request.compounds]}
+    )
+    if issues:
+        return None, issues
+    assert compounds is not None
+
+    ratios, ratio_issues = _parse_ratios(request.ratios, compounds)
+    if ratio_issues:
+        return None, ratio_issues
+    assert ratios is not None
+
+    coefficients = {
+        cid: int(value) for cid, value in request.coefficients.items()
+    }
+    return (compounds, coefficients, ratios), []
